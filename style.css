@@ -286,26 +286,26 @@ body {
   #trip-filter {
     top: 52px;
     left: 20px;
-    padding: 14px 18px;
-    border-radius: 14px;
-    font-size: 15px;
-    gap: 12px;
+    padding: 18px 22px;
+    border-radius: 16px;
+    font-size: 17px;
+    gap: 14px;
   }
 
   .trip-row {
-    gap: 12px;
-    min-height: 48px;
+    gap: 14px;
+    min-height: 54px;
   }
 
   .trip-date {
-    min-width: 58px;
-    font-size: 15px;
+    min-width: 64px;
+    font-size: 17px;
   }
 
   #trip-031-label,
   #trip-0401-label {
-    font-size: 15px;
-    min-width: 140px;
+    font-size: 17px;
+    min-width: 168px;
     text-align: center;
   }
 
@@ -313,43 +313,47 @@ body {
   #trip-031-next,
   #trip-0401-prev,
   #trip-0401-next {
-    min-width: 48px;
-    min-height: 48px;
+    min-width: 54px;
+    min-height: 54px;
     padding: 0;
-    font-size: 18px;
+    font-size: 20px;
     line-height: 1;
     display: inline-flex;
     align-items: center;
     justify-content: center;
   }
 
-  /* Sit below taller trip panel (~52 + 136px) */
+  /* Below trip panel: top 52 + panel height (~158px) */
   #compare-duration-btn {
-    top: 204px;
+    top: 226px;
     left: 20px;
-    padding: 12px 22px;
-    font-size: 15px;
-    min-height: 48px;
+    padding: 14px 26px;
+    font-size: 16px;
+    min-height: 52px;
   }
 
   #event-date-filter {
-    top: 272px;
+    top: 298px;
     left: 20px;
-    padding: 10px 14px;
-    font-size: 14px;
-    gap: 10px;
+    padding: 12px 18px;
+    font-size: 16px;
+    gap: 12px;
+    min-height: 54px;
   }
 
   #event-date-label {
-    font-size: 14px;
+    font-size: 16px;
+    min-width: 120px;
+    text-align: center;
   }
 
   #event-date-prev,
   #event-date-next {
-    min-width: 44px;
-    min-height: 44px;
+    min-width: 52px;
+    min-height: 52px;
     padding: 0;
-    font-size: 16px;
+    font-size: 18px;
+    line-height: 1;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -411,5 +415,12 @@ body {
     right: calc(8px + env(safe-area-inset-right, 0px));
     max-width: min(280px, calc(100vw - 100px - env(safe-area-inset-right, 0px)));
     font-size: 12px;
+  }
+}
+
+/* Tablet landscape: sample-point strip is a column; keep comfortable spacing */
+@media (min-width: 600px) and (orientation: landscape) {
+  #event-date-filter {
+    gap: 10px;
   }
 }

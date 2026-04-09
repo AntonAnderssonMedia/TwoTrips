@@ -99,8 +99,8 @@ async function supportsAR() {
     let currentTripIndex031 = 0;
     let currentTripIndex0401 = 0;
     let compareTripDuration = false;  // When true: shorter trip ends at 0.3m, longer extends higher
-    // Points to show: first + last always, plus sampled middle. Built from data size, steps of 50.
-    let pointsOptions = [2, 810];
+    // Points to show: preset ladder up to min(400, limiting trip length); see buildPointsOptions.
+    let pointsOptions = [2];
     let pointsToShowIndex = 0;
     /** Single merged road mesh geometry (built once in loadRoads). */
     let roadMergedGeometry = null;
@@ -209,13 +209,50 @@ async function supportsAR() {
     const MAP_HALF_Y = MAP_HEIGHT / 2;
     const ROAD_RIBBON_WIDTH = 0.004;
 
-    // Build point-count options for data size: 2, 52, 102, 152... step 50, then total.
-    function buildPointsOptions(total) {
-    if (total <= 2) return [2];
-    const opts = [2];
-    for (let n = 52; n < total; n += 50) opts.push(n);
-    opts.push(total);
-    return [...new Set(opts)].sort((a, b) => a - b);
+    // Preset counts (similar to WholeHourTap): 2, 5, 10, then fine steps toward 400.
+    const POINT_COUNT_PRESETS = (() => {
+        const s = new Set([2, 5, 10]);
+        for (let n = 15; n <= 100; n += 5) s.add(n);
+        for (let n = 110; n <= 200; n += 10) s.add(n);
+        for (let n = 220; n <= 400; n += 20) s.add(n);
+        return [...s].sort((a, b) => a - b);
+    })();
+
+    /** Max selectable sample count: min(400, shorter of the two active trips, or the only trip with data). */
+    function getCurrentPointsCap() {
+        const a = trips3[currentTripIndex031]?.events?.length ?? 0;
+        const b = trips4[currentTripIndex0401]?.events?.length ?? 0;
+        const limiting = a > 0 && b > 0 ? Math.min(a, b) : Math.max(a, b);
+        return Math.min(400, Math.max(limiting, 2));
+    }
+
+    /** Options ≤ cap, always including 2 and the exact cap when it is not already listed. */
+    function buildPointsOptions(cap) {
+        const maxN = Math.max(2, Math.floor(cap));
+        const fromPresets = POINT_COUNT_PRESETS.filter((n) => n <= maxN);
+        const opts = fromPresets.length ? [...fromPresets] : [2];
+        if (!opts.includes(maxN)) opts.push(maxN);
+        return [...new Set(opts)].sort((a, b) => a - b);
+    }
+
+    /**
+     * Rebuild sample-count UI from current trip pair. First load: bias toward ~20 points;
+     * trip changes: keep same count if still available.
+     */
+    function refreshPointsOptions(preserveSelection) {
+        const cap = getCurrentPointsCap();
+        const prevCount = preserveSelection ? pointsOptions[pointsToShowIndex] : null;
+        pointsOptions = buildPointsOptions(cap);
+        if (preserveSelection && prevCount != null) {
+            const idx = pointsOptions.indexOf(prevCount);
+            pointsToShowIndex = idx >= 0 ? idx : Math.min(pointsToShowIndex, pointsOptions.length - 1);
+        } else {
+            const prefer = 20;
+            const i = pointsOptions.findIndex((n) => n >= prefer);
+            pointsToShowIndex = i >= 0 ? i : pointsOptions.length - 1;
+        }
+        pointsToShowIndex = Math.max(0, Math.min(pointsToShowIndex, pointsOptions.length - 1));
+        populatePointsFilter();
     }
 
     // "extract" "HH:MM" from "YYYY/MM/DD HH:MM:SS.sss" (for labels)
@@ -710,13 +747,18 @@ async function supportsAR() {
     renderer.render(scene, camera);
     }
 
-    // Interpolate color: blue (speed 0) -> red (maxSpeed)
-    function getSpeedColor(speed, maxSpeed) {
-    if (maxSpeed <= 0) return 0x0088ff; // blue
-    const t = Math.min(1, Math.max(0, speed / maxSpeed));
-    const r = Math.round(t * 255);
-    const b = Math.round((1 - t) * 255);
-    return (r << 16) | (0 << 8) | b;
+    // Low speed (incl. 0) → black; higher speed → full trip hue so stops and slow legs read dark.
+    function speedColorFromBlack(speed, maxSpeed, baseHex) {
+        if (maxSpeed <= 0) return 0x000000;
+        const t = Math.min(1, Math.max(0, speed / maxSpeed));
+        const r0 = (baseHex >> 16) & 255;
+        const g0 = (baseHex >> 8) & 255;
+        const b0 = baseHex & 255;
+        return (
+            (Math.round(r0 * t) << 16) |
+            (Math.round(g0 * t) << 8) |
+            Math.round(b0 * t)
+        );
     }
 
     // Line2/LineGeometry/LineMaterial for pathway (adopted from threejs.org/examples webgl_lines_fat)
@@ -904,9 +946,7 @@ async function supportsAR() {
         activeEventDate = "trip";
         currentTripIndex031 = Math.min(currentTripIndex031, Math.max(0, trips3.length - 1));
         currentTripIndex0401 = Math.min(currentTripIndex0401, Math.max(0, trips4.length - 1));
-        pointsOptions = buildPointsOptions(500); // fallback when combining
-        pointsToShowIndex = Math.min(2, pointsOptions.length - 1);
-        populatePointsFilter();
+        refreshPointsOptions(false);
         populateTripFilter();
         rebuildEventMarkersForActiveDate();
         } catch (err) {
@@ -960,7 +1000,7 @@ async function supportsAR() {
     updateTripLabels();
     }
 
-    // Timestamp -> height (0.01m - 0.2m) for markers in the current date
+    // Timestamp -> height along trip: 0.05m (start) .. 0.5m (end); degenerate cases → 0.05m.
     function calculateHeightFromTimestamp(eventMarkers, targetMarker) {
     // Check if there are less than 2 event markers
     if (eventMarkers.length <= 1) return 0.05;
@@ -1175,10 +1215,9 @@ async function supportsAR() {
             const height = getHeight(pt);
             linePoints.push(new THREE.Vector3(pt.userData.localX, pt.userData.localZ, height));
         }
-        const pointColors = markers.map((pt) => {
-            const speedColor = getSpeedColor(pt.userData.speed_value ?? 0, maxSpeed);
-            return baseColor === COLOR_031 ? (speedColor & 0x00ffff) | 0x0044ff : (speedColor & 0xff00ff) | 0xff4400;
-        });
+        const pointColors = markers.map((pt) =>
+            speedColorFromBlack(pt.userData.speed_value ?? 0, maxSpeed, baseColor)
+        );
         if (renderer) {
             const lineOpts = { name: "tripLine", renderOrder: 0, tapTripKey };
             const shadowOpts = { name: "tripShadow", renderOrder: -1, tapTripKey };
@@ -1531,8 +1570,8 @@ async function supportsAR() {
     const count = pointsOptions[pointsToShowIndex] ?? pointsOptions[pointsOptions.length - 1];
     const t31 = trips3[currentTripIndex031]?.events?.length ?? 0;
     const t4 = trips4[currentTripIndex0401]?.events?.length ?? 0;
-    const total = Math.max(t31, t4);
-    labelEl.textContent = total ? `${count} / ${total} pts` : "—";
+    const denom = t31 > 0 && t4 > 0 ? Math.min(t31, t4) : Math.max(t31, t4);
+    labelEl.textContent = denom ? `${count} / ${denom} pts` : "—";
     }
 
     function populatePointsFilter() {
@@ -1600,6 +1639,7 @@ async function supportsAR() {
     if (max === 0) return;
     currentTripIndex031 = (currentTripIndex031 + direction + max) % max;
     updateTripLabels();
+    refreshPointsOptions(true);
     rebuildEventMarkersForActiveDate();
     }
     function changeTrip0401(direction) {
@@ -1607,6 +1647,7 @@ async function supportsAR() {
     if (max === 0) return;
     currentTripIndex0401 = (currentTripIndex0401 + direction + max) % max;
     updateTripLabels();
+    refreshPointsOptions(true);
     rebuildEventMarkersForActiveDate();
     }
     const trip031Prev = document.getElementById("trip-031-prev");
