@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>AR Marker Detection + Map plane</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <link rel="stylesheet" href="style.css">
+  </head>
+  <body>
+
+    <!-- Full-screen tap target for WebXR when select doesn’t fire (tap-to-inspect) -->
+    <div id="tap-capture" style="display: none;"></div>
+
+    <div id="trip-details" class="trip-details"></div>
+
+    <!-- Placement (No marker), JAN 22 2026 -->
+    <div id="instructions">Tap "Enter AR" to start, then move your phone to find a surface.</div>
+
+    <!-- Trip toggles: one per date (compare any March trip vs any April trip) -->
+    <div id="trip-filter" style="display: none;">
+      <div class="trip-row">
+        <span class="trip-date">31 Mar</span>
+        <button id="trip-031-prev">◀</button>
+        <span id="trip-031-label">—</span>
+        <button id="trip-031-next">▶</button>
+      </div>
+      <div class="trip-row">
+        <span class="trip-date">1 Apr</span>
+        <button id="trip-0401-prev">◀</button>
+        <span id="trip-0401-label">—</span>
+        <button id="trip-0401-next">▶</button>
+      </div>
+    </div>
+    <!-- Compare duration: shorter trip ends at 0.3m, longer extends higher -->
+    <button id="compare-duration-btn" type="button" style="display: none;">Compare duration: OFF</button>
+
+    <!-- Map / roads / timeline visibility (shown while in AR, placement OFF) -->
+    <div id="visibility-toggles" style="display: none;">
+      <button id="toggle-map-surface" type="button" class="visibility-toggle" title="Map surface">Map</button>
+      <button id="toggle-roads" type="button" class="visibility-toggle" title="Road overlay">Roads</button>
+      <button id="toggle-guide-timelines" type="button" class="visibility-toggle" title="Guide timelines">Timelines</button>
+    </div>
+
+    <!-- Points count toggle -->
+    <div id="event-date-filter" style="display: none;">
+      <button id="event-date-prev">◀</button>
+      <span id="event-date-label">—</span>
+      <button id="event-date-next">▶</button>
+    </div>
+
+    <button id="placement-toggle">Placement: ON</button>
+    <button id="enter-ar">Enter AR</button>
+    <div id="center-reticle"></div>
+
+    <!-- IF Unsupported browser/device -->
+    <div id="unsupported">
+      Your browser/ device does not support WebXR AR (`immersive-ar`).<br />
+      Try using Chrome on an Android device with ARCore support.
+    </div>
+    <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.165.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.165.0/examples/jsm/"
+      }
+    }
+    </script>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>
