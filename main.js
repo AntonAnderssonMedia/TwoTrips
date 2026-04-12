@@ -98,7 +98,7 @@ async function supportsAR() {
     let trips4 = [];
     let currentTripIndex031 = 0;
     let currentTripIndex0401 = 0;
-    let compareTripDuration = false;  // When true: shorter trip ends at 0.3m; longer scales (ratio capped)
+    let compareTripDuration = false;  // When true: shorter trip ends at 0.3m; longer height ∝ duration ratio
     // Points to show: preset ladder up to min(400, limiting trip length); see buildPointsOptions.
     let pointsOptions = [2];
     let pointsToShowIndex = 0;
@@ -1031,10 +1031,12 @@ async function supportsAR() {
     return 0.05 + (normalized * (0.5 - 0.05)); // per-path: 0.05m - 0.5m
     }
 
-    // Compare mode: shorter trip ends at 0.3m, longer scales up by duration ratio.
-    // Cap the *visual* ratio so one trip with a near-zero timestamp span (bad/duplicate times)
-    // vs a long trip does not stretch to multi-metre heights.
-    const MAX_COMPARE_DURATION_RATIO = 4;
+    // Compare mode: true duration ratio → height (2× longer → 2× taller end); shorter trip tops at H_SHORT.
+    // If the shorter trip's span is <1s while the other is long, timestamps are usually broken — treat the
+    // short duration as at least (long / N) so the visual ratio stays bounded (N = max multiplier in that case).
+    const COMPARE_ARTEFACT_SHORT_MS = 1_000;
+    const COMPARE_ARTEFACT_LONG_MS = 60_000;
+    const COMPARE_ARTEFACT_MAX_RATIO = 8;
     function calculateHeightCompareDurations(markers031, markers0401, targetMarker) {
         const parseT = (dt) => {
             const d = new Date((dt || "").replace(/\//g, "-"));
@@ -1048,11 +1050,14 @@ async function supportsAR() {
         const dur0401 = getDuration(markers0401);
         const durationShort = Math.min(dur031 || dur0401, dur0401 || dur031) || 1;
         const durationLong = Math.max(dur031 || 0, dur0401 || 0) || 1;
-        const effectiveShort = Math.max(durationShort, durationLong / MAX_COMPARE_DURATION_RATIO);
-        const ratio = durationLong / effectiveShort;
+        let durationForRatio = Math.max(durationShort, 1);
+        if (durationShort < COMPARE_ARTEFACT_SHORT_MS && durationLong >= COMPARE_ARTEFACT_LONG_MS) {
+            durationForRatio = Math.max(durationShort, durationLong / COMPARE_ARTEFACT_MAX_RATIO);
+        }
+        const ratio = durationLong / durationForRatio;
         const H_MIN = 0.01;
         const H_SHORT = 0.3;  // where shorter trip ends
-        const H_LONG = H_SHORT * ratio;  // at most ~H_SHORT * MAX_COMPARE_DURATION_RATIO
+        const H_LONG = H_SHORT * ratio;
         const markers = targetMarker.userData?.source === "03-31" ? markers031 : markers0401;
         if (!markers || markers.length < 2) return H_MIN;
         const times = markers.map((m) => parseT(m.userData.dateTimeEvent)).filter((t) => t != null);
