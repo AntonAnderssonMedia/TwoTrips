@@ -99,8 +99,8 @@ async function supportsAR() {
     let currentTripIndex031 = 0;
     let currentTripIndex0401 = 0;
     let compareTripDuration = false;  // When true: shorter trip ends at 0.3m; longer height ∝ duration ratio
-    // Points to show: preset ladder up to min(400, limiting trip length); see buildPointsOptions.
-    let pointsOptions = [2];
+    // Points to show: default min(200, shorter trip length); trip prev/next resets to that default.
+    let pointsOptions = [200];
     let pointsToShowIndex = 0;
     /** Single merged road mesh geometry (built once in loadRoads). */
     let roadMergedGeometry = null;
@@ -209,35 +209,28 @@ async function supportsAR() {
     const MAP_HALF_Y = MAP_HEIGHT / 2;
     const ROAD_RIBBON_WIDTH = 0.004;
 
-    // Preset counts (similar to WholeHourTap): 2, 5, 10, then fine steps toward 400.
-    const POINT_COUNT_PRESETS = (() => {
-        const s = new Set([2, 5, 10]);
-        for (let n = 15; n <= 100; n += 5) s.add(n);
-        for (let n = 110; n <= 200; n += 10) s.add(n);
-        for (let n = 220; n <= 400; n += 20) s.add(n);
-        return [...s].sort((a, b) => a - b);
-    })();
-
-    /** Max selectable sample count: min(400, shorter of the two active trips, or the only trip with data). */
+    /** Max sample count: shorter of the two active trips when both exist, else the trip that has data (≥2). */
     function getCurrentPointsCap() {
         const a = trips3[currentTripIndex031]?.events?.length ?? 0;
         const b = trips4[currentTripIndex0401]?.events?.length ?? 0;
         const limiting = a > 0 && b > 0 ? Math.min(a, b) : Math.max(a, b);
-        return Math.min(400, Math.max(limiting, 2));
+        return Math.max(limiting, 2);
     }
 
-    /** Options ≤ cap, always including 2 and the exact cap when it is not already listed. */
+    const DEFAULT_POINTS_TARGET = 200;
+
+    /** Either [200, cap] when cap > 200, else [cap] only (cannot sample more than exists). */
     function buildPointsOptions(cap) {
         const maxN = Math.max(2, Math.floor(cap));
-        const fromPresets = POINT_COUNT_PRESETS.filter((n) => n <= maxN);
-        const opts = fromPresets.length ? [...fromPresets] : [2];
-        if (!opts.includes(maxN)) opts.push(maxN);
-        return [...new Set(opts)].sort((a, b) => a - b);
+        if (maxN < DEFAULT_POINTS_TARGET) return [maxN];
+        if (maxN === DEFAULT_POINTS_TARGET) return [DEFAULT_POINTS_TARGET];
+        return [DEFAULT_POINTS_TARGET, maxN];
     }
 
     /**
-     * Rebuild sample-count UI from current trip pair. First load: bias toward ~20 points;
-     * trip changes: keep same count if still available.
+     * Rebuild sample-count UI from current trip pair.
+     * Default selection: min(200, cap) where cap is the shorter trip length (or the only trip).
+     * Trip browsing passes preserveSelection=false so we always revert to that default.
      */
     function refreshPointsOptions(preserveSelection) {
         const cap = getCurrentPointsCap();
@@ -245,11 +238,19 @@ async function supportsAR() {
         pointsOptions = buildPointsOptions(cap);
         if (preserveSelection && prevCount != null) {
             const idx = pointsOptions.indexOf(prevCount);
-            pointsToShowIndex = idx >= 0 ? idx : Math.min(pointsToShowIndex, pointsOptions.length - 1);
+            if (idx >= 0) {
+                pointsToShowIndex = idx;
+            } else if (prevCount > DEFAULT_POINTS_TARGET && pointsOptions.length > 1) {
+                pointsToShowIndex = pointsOptions.length - 1;
+            } else if (pointsOptions.includes(DEFAULT_POINTS_TARGET)) {
+                pointsToShowIndex = pointsOptions.indexOf(DEFAULT_POINTS_TARGET);
+            } else {
+                pointsToShowIndex = pointsOptions.length - 1;
+            }
         } else {
-            const prefer = 20;
-            const i = pointsOptions.findIndex((n) => n >= prefer);
-            pointsToShowIndex = i >= 0 ? i : pointsOptions.length - 1;
+            const prefer = cap >= DEFAULT_POINTS_TARGET ? DEFAULT_POINTS_TARGET : cap;
+            pointsToShowIndex = pointsOptions.indexOf(prefer);
+            if (pointsToShowIndex < 0) pointsToShowIndex = pointsOptions.length - 1;
         }
         pointsToShowIndex = Math.max(0, Math.min(pointsToShowIndex, pointsOptions.length - 1));
         populatePointsFilter();
@@ -383,6 +384,38 @@ async function supportsAR() {
     });
     }
 
+    function dateTimeEventToMs(dt) {
+        const d = new Date((dt || "").replace(/\//g, "-"));
+        return isNaN(d.getTime()) ? null : d.getTime();
+    }
+
+    function wallDurationMsFromEvents(events) {
+        if (!events || events.length < 2) return 0;
+        const times = events.map((e) => dateTimeEventToMs(e.dateTimeEvent)).filter((t) => t != null);
+        return times.length < 2 ? 0 : Math.max(...times) - Math.min(...times);
+    }
+
+    function formatTripDurationMs(ms) {
+        if (ms <= 0 || !Number.isFinite(ms)) return "";
+        const secTotal = Math.round(ms / 1000);
+        if (secTotal < 60) return `${secTotal}s`;
+        const minTotal = Math.floor(secTotal / 60);
+        if (minTotal < 60) {
+            const s = secTotal % 60;
+            return s ? `${minTotal} min ${s}s` : `${minTotal} min`;
+        }
+        const h = Math.floor(minTotal / 60);
+        const m = minTotal % 60;
+        return m ? `${h} h ${m} min` : `${h} h`;
+    }
+
+    function findTripBySourceAndId(source, tripId) {
+        const list = source === "03-31" ? trips3 : source === "04-01" ? trips4 : null;
+        if (!list || tripId == null) return null;
+        const key = String(tripId);
+        return list.find((t) => String(t.tripId) === key) ?? null;
+    }
+
     function showTripDetails(eventMarker) {
     const el = document.getElementById("trip-details");
     if (!el) return;
@@ -391,13 +424,16 @@ async function supportsAR() {
         return;
     }
     const ud = eventMarker.userData;
-    const tripId = ud.trip_id != null ? String(ud.trip_id) : "";
+    const trip = findTripBySourceAndId(ud.source, ud.trip_id);
+    const durMs = trip ? wallDurationMsFromEvents(trip.events) : 0;
+    const durStr = durMs > 0 ? formatTripDurationMs(durMs) : "";
     const src = ud.source === "04-01" ? "1 Apr" : ud.source === "03-31" ? "31 Mar" : (ud.source || "");
     const dateStr = formatEventDate(ud.dateTimeEvent);
     const timeStr = formatEventTime(ud.dateTimeEvent);
     const speedVal = typeof ud.speed_value === "number" ? ud.speed_value : null;
     const speedStr = speedVal != null ? ` · ${speedVal} m/s` : "";
-    el.innerHTML = `<strong>${dateStr}</strong>${timeStr ? ` · ${timeStr}` : ""}${src ? ` · ${src}` : ""}${tripId ? ` · Trip ${tripId}` : ""}${speedStr}`;
+    const durationPart = durStr ? ` · Trip duration: ${durStr}` : "";
+    el.innerHTML = `<strong>${dateStr}</strong>${timeStr ? ` · ${timeStr}` : ""}${src ? ` · ${src}` : ""}${durationPart}${speedStr}`;
     el.classList.add("visible");
     }
 
@@ -982,7 +1018,7 @@ async function supportsAR() {
 
     function sampleAndPush(events, out) {
         if (!events || events.length === 0) return;
-        const targetCount = Math.min(pointsOptions[pointsToShowIndex] ?? 500, events.length);
+        const targetCount = Math.min(pointsOptions[pointsToShowIndex] ?? DEFAULT_POINTS_TARGET, events.length);
         const indices = getSampledIndices(events.length, targetCount);
         for (const idx of indices) {
             const ev = events[idx];
@@ -1031,23 +1067,18 @@ async function supportsAR() {
     return 0.05 + (normalized * (0.5 - 0.05)); // per-path: 0.05m - 0.5m
     }
 
-    // Compare mode: true duration ratio → height (2× longer → 2× taller end); shorter trip tops at H_SHORT.
-    // If the shorter trip's span is <1s while the other is long, timestamps are usually broken — treat the
-    // short duration as at least (long / N) so the visual ratio stays bounded (N = max multiplier in that case).
+    // Compare mode: wall duration ratio → height; shorter trip tops at H_SHORT. Uses full trip event lists
+    // (not subsampled markers) so the ratio matches the whole bus trip. Display ratio is capped for AR.
     const COMPARE_ARTEFACT_SHORT_MS = 1_000;
     const COMPARE_ARTEFACT_LONG_MS = 60_000;
     const COMPARE_ARTEFACT_MAX_RATIO = 8;
+    /** Beyond this, longer trip height does not grow (still taller than short, but not multi-metre). */
+    const COMPARE_DISPLAY_RATIO_CAP = 4;
     function calculateHeightCompareDurations(markers031, markers0401, targetMarker) {
-        const parseT = (dt) => {
-            const d = new Date((dt || "").replace(/\//g, "-"));
-            return isNaN(d.getTime()) ? null : d.getTime();
-        };
-        const getDuration = (markers) => {
-            const times = markers.map((m) => parseT(m.userData.dateTimeEvent)).filter((t) => t != null);
-            return times.length < 2 ? 0 : Math.max(...times) - Math.min(...times);
-        };
-        const dur031 = getDuration(markers031);
-        const dur0401 = getDuration(markers0401);
+        const trip03 = trips3[currentTripIndex031];
+        const trip04 = trips4[currentTripIndex0401];
+        const dur031 = trip03 ? wallDurationMsFromEvents(trip03.events) : 0;
+        const dur0401 = trip04 ? wallDurationMsFromEvents(trip04.events) : 0;
         const durationShort = Math.min(dur031 || dur0401, dur0401 || dur031) || 1;
         const durationLong = Math.max(dur031 || 0, dur0401 || 0) || 1;
         let durationForRatio = Math.max(durationShort, 1);
@@ -1055,19 +1086,22 @@ async function supportsAR() {
             durationForRatio = Math.max(durationShort, durationLong / COMPARE_ARTEFACT_MAX_RATIO);
         }
         const ratio = durationLong / durationForRatio;
+        const visualRatio = Math.min(ratio, COMPARE_DISPLAY_RATIO_CAP);
         const H_MIN = 0.01;
         const H_SHORT = 0.3;  // where shorter trip ends
-        const H_LONG = H_SHORT * ratio;
+        const H_LONG = H_SHORT * visualRatio;
         const markers = targetMarker.userData?.source === "03-31" ? markers031 : markers0401;
         if (!markers || markers.length < 2) return H_MIN;
-        const times = markers.map((m) => parseT(m.userData.dateTimeEvent)).filter((t) => t != null);
+        const times = markers.map((m) => dateTimeEventToMs(m.userData.dateTimeEvent)).filter((t) => t != null);
         const tStart = Math.min(...times);
         const tEnd = Math.max(...times);
         const duration = tEnd - tStart || 1;
-        const targetT = parseT(targetMarker.userData.dateTimeEvent);
+        const targetT = dateTimeEventToMs(targetMarker.userData.dateTimeEvent);
         if (targetT == null) return H_MIN;
         const norm = (targetT - tStart) / duration;
-        const hEnd = duration <= durationShort ? H_SHORT : H_LONG;
+        const tripFull = targetMarker.userData?.source === "03-31" ? trip03 : trip04;
+        const durThisTripFull = tripFull ? wallDurationMsFromEvents(tripFull.events) : duration;
+        const hEnd = durThisTripFull <= durationShort ? H_SHORT : H_LONG;
         return H_MIN + norm * (hEnd - H_MIN);
     }
 
@@ -1647,7 +1681,7 @@ async function supportsAR() {
     if (max === 0) return;
     currentTripIndex031 = (currentTripIndex031 + direction + max) % max;
     updateTripLabels();
-    refreshPointsOptions(true);
+    refreshPointsOptions(false);
     rebuildEventMarkersForActiveDate();
     }
     function changeTrip0401(direction) {
@@ -1655,7 +1689,7 @@ async function supportsAR() {
     if (max === 0) return;
     currentTripIndex0401 = (currentTripIndex0401 + direction + max) % max;
     updateTripLabels();
-    refreshPointsOptions(true);
+    refreshPointsOptions(false);
     rebuildEventMarkersForActiveDate();
     }
     const trip031Prev = document.getElementById("trip-031-prev");
