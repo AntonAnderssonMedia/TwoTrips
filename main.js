@@ -233,8 +233,8 @@ async function supportsAR() {
 
     const DEFAULT_POINTS_TARGET = 100;
 
-    /** Steps ≤ cap (cap never exceeds MAX_DISPLAY_SAMPLES). */
-    const POINTS_LADDER = [50, 100, 150, 200];
+    /** Steps ≤ cap (cap never exceeds MAX_DISPLAY_SAMPLES); always includes raw max if not in list. */
+    const POINTS_LADDER = [2, 10, 25, 50, 100, 150, 200];
     function buildPointsOptions(cap) {
         const maxN = Math.max(2, Math.floor(cap));
         const set = new Set();
