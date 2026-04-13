@@ -88,6 +88,8 @@ async function supportsAR() {
     // Event markers (one set per displayed path)
     const eventMarkers031 = [];
     const eventMarkers0401 = [];
+    /** Built in rebuild when Compare duration is on; avoids O(n²) height work per vertex. */
+    let compareHeightCache = null;
     const allEvents = []; // legacy, used for pointsOptions
     let eventsLoaded = false;
     let activeEventDate = null;
@@ -99,8 +101,8 @@ async function supportsAR() {
     let currentTripIndex031 = 0;
     let currentTripIndex0401 = 0;
     let compareTripDuration = false;  // When true: long trip to 0.6m, short trip proportional (from 0.01m)
-    // Points to show: default min(200, shorter trip length); trip prev/next resets to that default.
-    let pointsOptions = [200];
+    // Points to show: default min(100, shorter trip length); trip prev/next resets to that default.
+    let pointsOptions = [100];
     let pointsToShowIndex = 0;
     /** Single merged road mesh geometry (built once in loadRoads). */
     let roadMergedGeometry = null;
@@ -217,9 +219,9 @@ async function supportsAR() {
         return Math.max(limiting, 2);
     }
 
-    const DEFAULT_POINTS_TARGET = 200;
+    const DEFAULT_POINTS_TARGET = 100;
 
-    /** Either [200, cap] when cap > 200, else [cap] only (cannot sample more than exists). */
+    /** Either [100, cap] when cap > 100, else [cap] only (cannot sample more than exists). */
     function buildPointsOptions(cap) {
         const maxN = Math.max(2, Math.floor(cap));
         if (maxN < DEFAULT_POINTS_TARGET) return [maxN];
@@ -229,7 +231,7 @@ async function supportsAR() {
 
     /**
      * Rebuild sample-count UI from current trip pair.
-     * Default selection: min(200, cap) where cap is the shorter trip length (or the only trip).
+     * Default selection: min(100, cap) where cap is the shorter trip length (or the only trip).
      * Trip browsing passes preserveSelection=false so we always revert to that default.
      */
     function refreshPointsOptions(preserveSelection) {
@@ -321,9 +323,10 @@ async function supportsAR() {
     const sourceKey = tapKey.slice(0, colon);
     const markers = sourceKey === "04-01" ? eventMarkers0401 : eventMarkers031;
     if (!markers || markers.length < 2) return null;
+    const tsSpanElev = compareTripDuration ? null : precomputeTimestampHeightSpan(markers);
     const getHeight = compareTripDuration
         ? (pt) => calculateHeightCompareDurations(eventMarkers031, eventMarkers0401, pt)
-        : (pt) => calculateHeightFromTimestamp(markers, pt);
+        : (pt) => timestampHeightFromSpan(tsSpanElev, pt);
     const out = [];
     for (const pt of markers) {
         out.push(new THREE.Vector3(pt.userData.localX, pt.userData.localZ, getHeight(pt)));
@@ -1029,6 +1032,10 @@ async function supportsAR() {
     if (trip031) sampleAndPush(trip031.events, eventMarkers031);
     if (trip0401) sampleAndPush(trip0401.events, eventMarkers0401);
 
+    compareHeightCache = compareTripDuration
+        ? buildCompareHeightCache(eventMarkers031, eventMarkers0401)
+        : null;
+
     buildTapInspectMarkers();
 
     if (placedPlane && placedPlane.userData?.eventsGroup) addEventsToPlane();
@@ -1036,72 +1043,77 @@ async function supportsAR() {
     updateTripLabels();
     }
 
+    const H_TIMESTAMP_MIN = 0.05;
+    const H_TIMESTAMP_MAX = 0.5;
+    const H_COMPARE_MAX = 0.6;
+    const H_COMPARE_MIN = 0.01;
+
+    /** One pass over sampled markers for min/max event time (used for per-vertex height). */
+    function precomputeTimestampHeightSpan(markers) {
+        if (!markers || markers.length <= 1) return { degenerate: true };
+        let minT = Infinity;
+        let maxT = -Infinity;
+        for (let i = 0; i < markers.length; i++) {
+            const t = dateTimeEventToMs(markers[i].userData?.dateTimeEvent);
+            if (t == null) continue;
+            if (t < minT) minT = t;
+            if (t > maxT) maxT = t;
+        }
+        if (!Number.isFinite(minT) || minT >= maxT) return { degenerate: true };
+        return { minT, maxT, span: maxT - minT || 1 };
+    }
+
+    function timestampHeightFromSpan(span, markerLike) {
+        if (!span || span.degenerate) return H_TIMESTAMP_MIN;
+        const ud = markerLike.userData ?? markerLike;
+        const t = dateTimeEventToMs(ud.dateTimeEvent);
+        if (t == null) return H_TIMESTAMP_MIN;
+        const normalized = (t - span.minT) / span.span;
+        return H_TIMESTAMP_MIN + normalized * (H_TIMESTAMP_MAX - H_TIMESTAMP_MIN);
+    }
+
     // Timestamp -> height along trip: 0.05m (start) .. 0.5m (end); degenerate cases → 0.05m.
     function calculateHeightFromTimestamp(eventMarkers, targetMarker) {
-    // Check if there are less than 2 event markers
-    if (eventMarkers.length <= 1) return 0.05;
-
-    let minTime = Infinity;
-    let maxTime = -Infinity;
-
-    for (const marker of eventMarkers) {
-        const dt = marker.userData.dateTimeEvent;
-        if (!dt) continue;
-        const d = new Date(dt.replace(/\//g, "-"));
-        if (isNaN(d.getTime())) continue;
-        const t = d.getTime();
-        if (t < minTime) minTime = t;
-        if (t > maxTime) maxTime = t;
-    }
-    // Check if the min and max time are the same
-    if (minTime === maxTime) return 0.05;
-
-    const targetDT = targetMarker.userData.dateTimeEvent;
-    // Check if the target date time is valid
-    if (!targetDT) return 0.05;
-
-    const td = new Date(targetDT.replace(/\//g, "-"));
-    if (isNaN(td.getTime())) return 0.05;
-
-    const normalized = (td.getTime() - minTime) / (maxTime - minTime);
-    return 0.05 + (normalized * (0.5 - 0.05)); // per-path: 0.05m - 0.5m
+        const span = precomputeTimestampHeightSpan(eventMarkers);
+        return timestampHeightFromSpan(span, targetMarker);
     }
 
-    // Compare mode: longer trip ends at H_COMPARE_MAX (0.6m); shorter trip ends proportionally
-    // (same duration ratio as wall-clock). Full-trip durations; per-point ramp from H_MIN (0.01m).
-    const H_COMPARE_MAX = 0.6;
-    function calculateHeightCompareDurations(markers031, markers0401, targetMarker) {
-        const H_MIN = 0.01;
+    function buildCompareHeightCache(markers031, markers0401) {
         const trip03 = trips3[currentTripIndex031];
         const trip04 = trips4[currentTripIndex0401];
         const dur031 = trip03 ? wallDurationMsFromEvents(trip03.events) : 0;
         const dur0401 = trip04 ? wallDurationMsFromEvents(trip04.events) : 0;
         const durationShort = Math.min(dur031 || dur0401, dur0401 || dur031) || 1;
         const durationLong = Math.max(dur031 || 0, dur0401 || 0) || 1;
-        const hEndShort = Math.max(H_MIN, H_COMPARE_MAX * (durationShort / durationLong));
-        const hEndLong = H_COMPARE_MAX;
-        const markers = targetMarker.userData?.source === "03-31" ? markers031 : markers0401;
-        if (!markers || markers.length < 2) return H_MIN;
-        const times = markers.map((m) => dateTimeEventToMs(m.userData.dateTimeEvent)).filter((t) => t != null);
-        const tStart = Math.min(...times);
-        const tEnd = Math.max(...times);
-        const duration = tEnd - tStart || 1;
-        const targetT = dateTimeEventToMs(targetMarker.userData.dateTimeEvent);
-        if (targetT == null) return H_MIN;
-        const norm = (targetT - tStart) / duration;
-        const tripFull = targetMarker.userData?.source === "03-31" ? trip03 : trip04;
-        const durThisTripFull = tripFull ? wallDurationMsFromEvents(tripFull.events) : duration;
-        const isLongTrip = durThisTripFull + 0.5 >= durationLong;
-        const hEnd = isLongTrip ? hEndLong : hEndShort;
-        return H_MIN + norm * (hEnd - H_MIN);
+        const hEndShort = Math.max(H_COMPARE_MIN, H_COMPARE_MAX * (durationShort / durationLong));
+        return {
+            dur031,
+            dur0401,
+            durationLong,
+            hEndLong: H_COMPARE_MAX,
+            hEndShort,
+            span031: precomputeTimestampHeightSpan(markers031),
+            span0401: precomputeTimestampHeightSpan(markers0401)
+        };
     }
 
-    function computeEventHeightForTap(markerRef) {
-        const markers = markerRef.userData?.source === "04-01" ? eventMarkers0401 : eventMarkers031;
-        if (compareTripDuration) {
-            return calculateHeightCompareDurations(eventMarkers031, eventMarkers0401, markerRef);
+    // Uses compareHeightCache (built once per marker rebuild) so each vertex is O(1).
+    function calculateHeightCompareDurations(markers031, markers0401, targetMarker) {
+        let c = compareHeightCache;
+        if (!c) {
+            c = buildCompareHeightCache(markers031, markers0401);
+            compareHeightCache = c;
         }
-        return calculateHeightFromTimestamp(markers, markerRef);
+        const src = targetMarker.userData?.source;
+        const span = src === "03-31" ? c.span031 : c.span0401;
+        const durThis = src === "03-31" ? c.dur031 : c.dur0401;
+        if (!span || span.degenerate) return H_COMPARE_MIN;
+        const targetT = dateTimeEventToMs(targetMarker.userData.dateTimeEvent);
+        if (targetT == null) return H_COMPARE_MIN;
+        const norm = (targetT - span.minT) / span.span;
+        const isLongTrip = durThis + 0.5 >= c.durationLong;
+        const hEnd = isLongTrip ? c.hEndLong : c.hEndShort;
+        return H_COMPARE_MIN + norm * (hEnd - H_COMPARE_MIN);
     }
 
     function buildTapInspectMarkers() {
@@ -1111,9 +1123,12 @@ async function supportsAR() {
         const tripId = markers[0].userData?.trip_id;
         if (tripId == null) return;
         const tapKey = `${sourceKey}:${tripId}`;
+        const tsSpan = compareTripDuration ? null : precomputeTimestampHeightSpan(markers);
         const arr = [];
         for (const m of markers) {
-            const localH = computeEventHeightForTap(m);
+            const localH = compareTripDuration
+                ? calculateHeightCompareDurations(eventMarkers031, eventMarkers0401, m)
+                : timestampHeightFromSpan(tsSpan, m);
             arr.push({
             userData: {
                 ...m.userData,
@@ -1239,9 +1254,10 @@ async function supportsAR() {
         const tapTripKey = tid != null ? `${sourceKey}:${tid}` : null;
         const linePoints = [];
         let maxSpeed = 0;
+        const tsSpanPath = compareTripDuration ? null : precomputeTimestampHeightSpan(markers);
         const getHeight = compareTripDuration
             ? (pt) => calculateHeightCompareDurations(eventMarkers031, eventMarkers0401, pt)
-            : (pt) => calculateHeightFromTimestamp(markers, pt);
+            : (pt) => timestampHeightFromSpan(tsSpanPath, pt);
         for (const pt of markers) {
             const speed = pt.userData.speed_value ?? 0;
             if (speed > maxSpeed) maxSpeed = speed;
@@ -1267,9 +1283,10 @@ async function supportsAR() {
     if (primaryMarkers.length < 2) primaryMarkers = [];
     const firstMarker = primaryMarkers[0];
     const lastMarker = primaryMarkers[primaryMarkers.length - 1];
+    const tsSpanPrimary = compareTripDuration ? null : precomputeTimestampHeightSpan(primaryMarkers);
     const getH = compareTripDuration
         ? (m) => calculateHeightCompareDurations(eventMarkers031, eventMarkers0401, m)
-        : (m) => calculateHeightFromTimestamp(primaryMarkers, m);
+        : (m) => timestampHeightFromSpan(tsSpanPrimary, m);
     const hFirst = firstMarker ? getH(firstMarker) : 0.05;
     const hLast = lastMarker ? getH(lastMarker) : 0.05;
     const heights = [hFirst, hLast];
