@@ -101,7 +101,7 @@ async function supportsAR() {
     let currentTripIndex031 = 0;
     let currentTripIndex0401 = 0;
     let compareTripDuration = false;  // When true: long trip to 0.6m, short trip proportional (from 0.01m)
-    // Points to show: default min(100, shorter trip length); trip prev/next resets to that default.
+    // Display samples: ladder up to MAX_DISPLAY_SAMPLES; durations/compare use full trip.events (accurate).
     let pointsOptions = [100];
     let pointsToShowIndex = 0;
     /** Single merged road mesh geometry (built once in loadRoads). */
@@ -211,31 +211,47 @@ async function supportsAR() {
     const MAP_HALF_Y = MAP_HEIGHT / 2;
     const ROAD_RIBBON_WIDTH = 0.004;
 
-    /** Max sample count: shorter of the two active trips when both exist, else the trip that has data (≥2). */
-    function getCurrentPointsCap() {
+    /**
+     * Max points used for AR geometry, tap polylines, and time→height along the drawn path.
+     * Trip duration, compare wall times, and trip-details use full `trips3/4[].events` (not this cap).
+     */
+    const MAX_DISPLAY_SAMPLES = 200;
+
+    /** Full event count on the limiting trip; not clamped (for UI denominator and mental model). */
+    function getRawShorterTripEventCount() {
         const a = trips3[currentTripIndex031]?.events?.length ?? 0;
         const b = trips4[currentTripIndex0401]?.events?.length ?? 0;
-        const limiting = a > 0 && b > 0 ? Math.min(a, b) : Math.max(a, b);
-        return Math.max(limiting, 2);
+        if (a > 0 && b > 0) return Math.min(a, b);
+        return Math.max(a, b);
+    }
+
+    /** Cap for points UI and `eventMarkers*` sampling (performance). */
+    function getDisplaySampleCap() {
+        const raw = getRawShorterTripEventCount();
+        return Math.min(Math.max(raw, 2), MAX_DISPLAY_SAMPLES);
     }
 
     const DEFAULT_POINTS_TARGET = 100;
 
-    /** Either [100, cap] when cap > 100, else [cap] only (cannot sample more than exists). */
+    /** Steps ≤ cap (cap never exceeds MAX_DISPLAY_SAMPLES). */
+    const POINTS_LADDER = [50, 100, 150, 200];
     function buildPointsOptions(cap) {
         const maxN = Math.max(2, Math.floor(cap));
-        if (maxN < DEFAULT_POINTS_TARGET) return [maxN];
-        if (maxN === DEFAULT_POINTS_TARGET) return [DEFAULT_POINTS_TARGET];
-        return [DEFAULT_POINTS_TARGET, maxN];
+        const set = new Set();
+        for (const s of POINTS_LADDER) {
+            if (s >= 2 && s <= maxN) set.add(s);
+        }
+        set.add(maxN);
+        return [...set].sort((a, b) => a - b);
     }
 
     /**
      * Rebuild sample-count UI from current trip pair.
-     * Default selection: min(100, cap) where cap is the shorter trip length (or the only trip).
+     * Default selection: min(100, cap) where cap is getDisplaySampleCap() (shorter trip, max 200).
      * Trip browsing passes preserveSelection=false so we always revert to that default.
      */
     function refreshPointsOptions(preserveSelection) {
-        const cap = getCurrentPointsCap();
+        const cap = getDisplaySampleCap();
         const prevCount = preserveSelection ? pointsOptions[pointsToShowIndex] : null;
         pointsOptions = buildPointsOptions(cap);
         if (preserveSelection && prevCount != null) {
@@ -1618,10 +1634,8 @@ async function supportsAR() {
     const labelEl = document.getElementById("event-date-label");
     if (!labelEl) return;
     const count = pointsOptions[pointsToShowIndex] ?? pointsOptions[pointsOptions.length - 1];
-    const t31 = trips3[currentTripIndex031]?.events?.length ?? 0;
-    const t4 = trips4[currentTripIndex0401]?.events?.length ?? 0;
-    const denom = t31 > 0 && t4 > 0 ? Math.min(t31, t4) : Math.max(t31, t4);
-    labelEl.textContent = denom ? `${count} / ${denom} pts` : "—";
+    const rawTotal = getRawShorterTripEventCount();
+    labelEl.textContent = rawTotal ? `${count} / ${rawTotal} pts` : "—";
     }
 
     function populatePointsFilter() {
