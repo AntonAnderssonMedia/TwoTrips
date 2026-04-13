@@ -98,7 +98,7 @@ async function supportsAR() {
     let trips4 = [];
     let currentTripIndex031 = 0;
     let currentTripIndex0401 = 0;
-    let compareTripDuration = false;  // When true: shorter trip ends at 0.3m; longer height ∝ duration ratio
+    let compareTripDuration = false;  // When true: long trip to 0.6m, short trip proportional (from 0.01m)
     // Points to show: default min(200, shorter trip length); trip prev/next resets to that default.
     let pointsOptions = [200];
     let pointsToShowIndex = 0;
@@ -1067,29 +1067,19 @@ async function supportsAR() {
     return 0.05 + (normalized * (0.5 - 0.05)); // per-path: 0.05m - 0.5m
     }
 
-    // Compare mode: wall duration ratio → height; shorter trip tops at H_SHORT. Uses full trip event lists
-    // (not subsampled markers) so the ratio matches the whole bus trip. Display ratio is capped for AR.
-    const COMPARE_ARTEFACT_SHORT_MS = 1_000;
-    const COMPARE_ARTEFACT_LONG_MS = 60_000;
-    const COMPARE_ARTEFACT_MAX_RATIO = 8;
-    /** Beyond this, longer trip height does not grow (still taller than short, but not multi-metre). */
-    const COMPARE_DISPLAY_RATIO_CAP = 4;
+    // Compare mode: longer trip ends at H_COMPARE_MAX (0.6m); shorter trip ends proportionally
+    // (same duration ratio as wall-clock). Full-trip durations; per-point ramp from H_MIN (0.01m).
+    const H_COMPARE_MAX = 0.6;
     function calculateHeightCompareDurations(markers031, markers0401, targetMarker) {
+        const H_MIN = 0.01;
         const trip03 = trips3[currentTripIndex031];
         const trip04 = trips4[currentTripIndex0401];
         const dur031 = trip03 ? wallDurationMsFromEvents(trip03.events) : 0;
         const dur0401 = trip04 ? wallDurationMsFromEvents(trip04.events) : 0;
         const durationShort = Math.min(dur031 || dur0401, dur0401 || dur031) || 1;
         const durationLong = Math.max(dur031 || 0, dur0401 || 0) || 1;
-        let durationForRatio = Math.max(durationShort, 1);
-        if (durationShort < COMPARE_ARTEFACT_SHORT_MS && durationLong >= COMPARE_ARTEFACT_LONG_MS) {
-            durationForRatio = Math.max(durationShort, durationLong / COMPARE_ARTEFACT_MAX_RATIO);
-        }
-        const ratio = durationLong / durationForRatio;
-        const visualRatio = Math.min(ratio, COMPARE_DISPLAY_RATIO_CAP);
-        const H_MIN = 0.01;
-        const H_SHORT = 0.3;  // where shorter trip ends
-        const H_LONG = H_SHORT * visualRatio;
+        const hEndShort = Math.max(H_MIN, H_COMPARE_MAX * (durationShort / durationLong));
+        const hEndLong = H_COMPARE_MAX;
         const markers = targetMarker.userData?.source === "03-31" ? markers031 : markers0401;
         if (!markers || markers.length < 2) return H_MIN;
         const times = markers.map((m) => dateTimeEventToMs(m.userData.dateTimeEvent)).filter((t) => t != null);
@@ -1101,7 +1091,8 @@ async function supportsAR() {
         const norm = (targetT - tStart) / duration;
         const tripFull = targetMarker.userData?.source === "03-31" ? trip03 : trip04;
         const durThisTripFull = tripFull ? wallDurationMsFromEvents(tripFull.events) : duration;
-        const hEnd = durThisTripFull <= durationShort ? H_SHORT : H_LONG;
+        const isLongTrip = durThisTripFull + 0.5 >= durationLong;
+        const hEnd = isLongTrip ? hEndLong : hEndShort;
         return H_MIN + norm * (hEnd - H_MIN);
     }
 
